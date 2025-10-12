@@ -23,6 +23,9 @@ pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
 
+/// 定义最大的系统调用ID，用于计数数组大小
+const MAX_SYSCALL_NUM: usize = 512;
+
 /// The task manager, where all the tasks are managed.
 ///
 /// Functions implemented on `TaskManager` deals with all task state transitions
@@ -45,6 +48,28 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+    /// 调用不同系统调用次数，使用二维数组表示，每个任务一个计数器数组
+    /// 第一维是任务ID，第二维是系统调用ID
+    syscall_counters: [[usize; MAX_SYSCALL_NUM]; MAX_APP_NUM],
+}
+
+// 添加TaskManagerInner的实现
+impl TaskManagerInner {
+    /// 增加指定任务的系统调用计数
+    pub fn inc_syscall_count(&mut self, task_id: usize, syscall_id: usize) {
+        if syscall_id < MAX_SYSCALL_NUM {
+            self.syscall_counters[task_id][syscall_id] += 1;
+        }
+    }
+    
+    /// 获取指定任务的系统调用计数
+    pub fn get_syscall_count(&self, task_id: usize, syscall_id: usize) -> usize {
+        if syscall_id < MAX_SYSCALL_NUM {
+            self.syscall_counters[task_id][syscall_id]
+        } else {
+            0
+        }
+    }
 }
 
 lazy_static! {
@@ -65,6 +90,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    syscall_counters: [[0; MAX_SYSCALL_NUM]; MAX_APP_NUM],
                 })
             },
         }
@@ -168,4 +194,18 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// 增加当前任务的系统调用计数
+pub fn inc_syscall_count(syscall_id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.inc_syscall_count(current, syscall_id);
+}
+
+/// 获取当前任务的系统调用计数
+pub fn get_syscall_count(syscall_id: usize) -> usize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.get_syscall_count(current, syscall_id)
 }
