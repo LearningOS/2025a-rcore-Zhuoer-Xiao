@@ -28,6 +28,7 @@ use fs::*;
 use process::*;
 
 /// handle syscall exception with `syscall_id` and other arguments
+// 系统调用
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     // 增加系统调用计数
     crate::task::inc_syscall_count(syscall_id);

@@ -18,6 +18,7 @@ pub fn print(args: fmt::Arguments) {
 }
 
 /// Print! to the host console using the format string and arguments.
+/// 宏的匹配模式
 #[macro_export]
 macro_rules! print {
     ($fmt: literal $(, $($arg: tt)+)?) => {

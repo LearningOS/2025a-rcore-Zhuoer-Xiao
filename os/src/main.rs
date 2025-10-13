@@ -18,6 +18,7 @@
 #![deny(missing_docs)]
 #![deny(warnings)]
 #![no_std]
+// 告诉编译器没有main函数
 #![no_main]
 #![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
@@ -41,16 +42,20 @@ pub mod task;
 pub mod timer;
 pub mod trap;
 
+// 引入汇编
 core::arch::global_asm!(include_str!("entry.asm"));
 core::arch::global_asm!(include_str!("link_app.S"));
 
 /// clear BSS segment
+/// 普通应用程序依赖操作系统或运行时环境自动清零BSS段
+/// 操作系统内核本身就是运行时环境，没有更高层的环境来完成这项工作
 fn clear_bss() {
     extern "C" {
         fn sbss();
         fn ebss();
     }
     unsafe {
+        // 该函数允许从原始内存地址创建一个Rust切片，绕过正常的借用检查机制
         core::slice::from_raw_parts_mut(sbss as usize as *mut u8, ebss as usize - sbss as usize)
             .fill(0);
     }
