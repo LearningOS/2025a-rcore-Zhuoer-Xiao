@@ -22,6 +22,7 @@ impl TaskContext {
         }
     }
     /// Create a new task context with a trap return addr and a kernel stack pointer
+    /// goto_restore 保存传入的 sp，并将 ra 设置为 __restore 的入口地址，构造任务上下文后返回。
     pub fn goto_restore(kstack_ptr: usize) -> Self {
         extern "C" {
             fn __restore();

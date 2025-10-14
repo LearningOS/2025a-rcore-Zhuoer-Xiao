@@ -33,10 +33,13 @@ impl KernelStack {
         self.data.as_ptr() as usize + KERNEL_STACK_SIZE
     }
     pub fn push_context(&self, cx: TrapContext) -> &'static mut TrapContext {
+        // 计算TrapContext在栈上存储位置
         let cx_ptr = (self.get_sp() - core::mem::size_of::<TrapContext>()) as *mut TrapContext;
         unsafe {
+            // 将上下文信息压入内核栈
             *cx_ptr = cx;
         }
+        // 返回指向该存储位置的引用。
         unsafe { cx_ptr.as_mut().unwrap() }
     }
 }
@@ -66,6 +69,7 @@ impl AppManager {
         }
     }
 
+    // 加载app
     unsafe fn load_app(&self, app_id: usize) {
         if app_id >= self.num_app {
             println!("All applications completed!");
@@ -73,7 +77,7 @@ impl AppManager {
             crate::board::QEMU_EXIT_HANDLE.exit_success();
         }
         println!("[kernel] Loading app_{}", app_id);
-        // clear app area
+        // 从APP_BASE_ADDRESS,APP_SIZE_LIMIT长度区域清零
         core::slice::from_raw_parts_mut(APP_BASE_ADDRESS as *mut u8, APP_SIZE_LIMIT).fill(0);
         let app_src = core::slice::from_raw_parts(
             self.app_start[app_id] as *const u8,
@@ -87,9 +91,10 @@ impl AppManager {
         // Therefore, fence.i must be executed after we have loaded
         // the code of the next app into the instruction memory.
         // See also: riscv non-priv spec chapter 3, 'Zifencei' extension.
+        // 清理icache
         asm!("fence.i");
     }
-
+    // 获取当前app id
     pub fn get_current_app(&self) -> usize {
         self.current_app
     }
@@ -98,7 +103,7 @@ impl AppManager {
         self.current_app += 1;
     }
 }
-
+// 懒加载，第一次使用时初始化
 lazy_static! {
     static ref APP_MANAGER: UPSafeCell<AppManager> = unsafe {
         UPSafeCell::new({
