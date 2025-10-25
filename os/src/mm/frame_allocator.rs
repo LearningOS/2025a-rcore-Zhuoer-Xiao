@@ -15,6 +15,7 @@ pub struct FrameTracker {
 
 impl FrameTracker {
     /// Create a new FrameTracker
+    /// 创建一个新的FrameTracker，并初始化为0
     pub fn new(ppn: PhysPageNum) -> Self {
         // page cleaning
         let bytes_array = ppn.get_bytes_array();
@@ -37,12 +38,14 @@ impl Drop for FrameTracker {
     }
 }
 
+// 实现一个接口
 trait FrameAllocator {
     fn new() -> Self;
     fn alloc(&mut self) -> Option<PhysPageNum>;
     fn dealloc(&mut self, ppn: PhysPageNum);
 }
 /// an implementation for frame allocator
+/// 物理页号区间[current,end)此前均 从未 被分配出去过，而向量 recycled 以后入先出的方式保存了被回收的物理页号
 pub struct StackFrameAllocator {
     current: usize,
     end: usize,
@@ -64,6 +67,8 @@ impl FrameAllocator for StackFrameAllocator {
             recycled: Vec::new(),
         }
     }
+    // 如果被回收页存在，直接返回最后回收页
+    // 如果不存在，则从 current 开始分配
     fn alloc(&mut self) -> Option<PhysPageNum> {
         if let Some(ppn) = self.recycled.pop() {
             Some(ppn.into())
@@ -74,6 +79,7 @@ impl FrameAllocator for StackFrameAllocator {
             Some((self.current - 1).into())
         }
     }
+    // 如果ppn大于最小未分配号或者在已回收页中存在，则panic
     fn dealloc(&mut self, ppn: PhysPageNum) {
         let ppn = ppn.0;
         // validity check
@@ -89,6 +95,7 @@ type FrameAllocatorImpl = StackFrameAllocator;
 
 lazy_static! {
     /// frame allocator instance through lazy_static!
+    /// 定义一个名为 FRAME_ALLOCATOR 的公共静态引用
     pub static ref FRAME_ALLOCATOR: UPSafeCell<FrameAllocatorImpl> =
         unsafe { UPSafeCell::new(FrameAllocatorImpl::new()) };
 }

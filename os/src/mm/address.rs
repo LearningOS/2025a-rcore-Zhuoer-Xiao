@@ -58,6 +58,7 @@ impl From<usize> for PhysPageNum {
         Self(v & ((1 << PPN_WIDTH_SV39) - 1))
     }
 }
+// 取出虚拟地址
 impl From<usize> for VirtAddr {
     fn from(v: usize) -> Self {
         Self(v & ((1 << VA_WIDTH_SV39) - 1))
@@ -157,6 +158,7 @@ impl From<PhysPageNum> for PhysAddr {
 
 impl VirtPageNum {
     /// Get the indexes of the page table entry
+    /// 取出虚拟页号的三级页索引，并按照从高到低的顺序返回
     pub fn indexes(&self) -> [usize; 3] {
         let mut vpn = self.0;
         let mut idx = [0usize; 3];
@@ -177,16 +179,22 @@ impl PhysAddr {
 }
 impl PhysPageNum {
     /// Get the reference of page table(array of ptes)
+    /// 通过物理页号获取页表项
+    /// 返回一个页表项定长数组的可变引用，可以用来修改多级页表中的一个节点
     pub fn get_pte_array(&self) -> &'static mut [PageTableEntry] {
         let pa: PhysAddr = (*self).into();
         unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut PageTableEntry, 512) }
     }
     /// Get the reference of page(array of bytes)
+    /// 转换物理页号为物理地址
+    /// 返回的是一个字节数组的可变引用，可以以字节为粒度对物理页帧上的数据进行访问
     pub fn get_bytes_array(&self) -> &'static mut [u8] {
         let pa: PhysAddr = (*self).into();
         unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut u8, 4096) }
     }
     /// Get the mutable reference of physical address
+    /// 泛型方法
+    /// 泛型函数，获取一个恰好放在一个物理页帧开头的类型为 T 的数据的可变引用
     pub fn get_mut<T>(&self) -> &'static mut T {
         let pa: PhysAddr = (*self).into();
         pa.get_mut()

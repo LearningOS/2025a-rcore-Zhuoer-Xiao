@@ -115,3 +115,23 @@ lazy_static! {
 pub fn add_initproc() {
     add_task(INITPROC.clone());
 }
+
+/// 闭包访问当前任务的内存集
+pub fn current_momory_set(f: impl FnOnce(&mut crate::mm::MemorySet) -> isize) -> isize {
+    TASK_MANAGER.current_momory_set(f)
+}
+
+/// 当前任务的页表转换虚拟页号，得到页表项
+pub fn translate_vpn_to_pte(vpn: crate::mm::VirtPageNum) -> Option<crate::mm::PageTableEntry> {
+    TASK_MANAGER.translate_vpn_to_pte(vpn)
+}
+
+/// 更新当前系统调用计数
+pub fn update_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.update_syscall_count(syscall_id)
+}
+
+ /// 获取当前系统调用计数
+ pub fn get_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
+}

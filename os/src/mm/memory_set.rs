@@ -30,14 +30,23 @@ lazy_static! {
     pub static ref KERNEL_SPACE: Arc<UPSafeCell<MemorySet>> =
         Arc::new(unsafe { UPSafeCell::new(MemorySet::new_kernel()) });
 }
-/// address space
+
+/// 地址空间是一系列有关联的逻辑段，这种关联一般是指这些逻辑段属于一个运行的程序
+/// （目前把一个运行的程序称为任务，后续会称为进程）。 
+/// 用来表明正在运行的应用所在执行环境中的可访问内存空间，
+/// 在这个内存空间中，包含了一系列的不一定连续的逻辑段。 
+/// 这样我们就有任务的地址空间、内核的地址空间等说法了
 pub struct MemorySet {
+    // 包含了该地址空间的多级页表 page_table 和一个逻辑段 MapArea 的向量 areas 。
+    // 注意 PageTable 下 挂着所有多级页表的节点所在的物理页帧，
+    // 而每个 MapArea 下则挂着对应逻辑段中的数据所在的物理页帧，
+    // 这两部分 合在一起构成了一个地址空间所需的所有物理页帧。
     page_table: PageTable,
     areas: Vec<MapArea>,
 }
 
 impl MemorySet {
-    /// Create a new empty `MemorySet`.
+    /// 新建一个地址空间
     pub fn new_bare() -> Self {
         Self {
             page_table: PageTable::new(),
@@ -300,12 +309,75 @@ impl MemorySet {
             false
         }
     }
+    /// 映射一段地址空间
+    pub fn mmap(&mut self,start:VirtAddr,len:usize,perm:MapPermission)->bool{
+        let end=VirtAddr::from(start.0+len);
+        let start_vpn=start.floor();
+        let end_vpn=end.ceil();
+        // 检查范围内是否有被映射的物理页帧
+        for vpn in VPNRange::new(start_vpn,end_vpn){
+            if let Some(pte)=self.page_table.translate(vpn){
+                if pte.is_valid(){
+                    return false;
+                }
+            }
+        }
+        self.push(
+            MapArea::new(
+                start,
+                end,
+                MapType::Framed,
+                perm,
+            ),
+            None,
+        );
+        true
+    }
+
+    /// 取消地址空间的映射
+    /// 如果一个页未被映射，则失败
+    pub fn munmap(&mut self, start: VirtAddr, len: usize) -> bool {
+        let end = VirtAddr::from(start.0 + len);
+        let start_vpn = start.floor();
+        let end_vpn = end.ceil();
+        // 检查范围内是否有被映射的物理页帧
+        for vpn in VPNRange::new(start_vpn, end_vpn) {
+            if let Some(pte) = self.page_table.translate(vpn) {
+                if !pte.is_valid() {
+                    return false;
+                }
+            }else{
+                return false;
+            }
+        }
+
+        // 取消映射
+        for vpn in VPNRange::new(start_vpn, end_vpn) {
+            for area in self.areas.iter_mut(){
+                let area_start=area.vpn_range.get_start();
+                let area_end=area.vpn_range.get_end();
+                if vpn>=area_start && vpn<area_end{
+                    area.unmap_one(&mut self.page_table, vpn);
+                    break;
+                }
+            }
+        }
+        true
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
+/// 逻辑段描述连续虚拟地址空间
 pub struct MapArea {
+    // 描述一段虚拟页号的连续区间，表示该逻辑段在地址区间中的位置和长度
     vpn_range: VPNRange,
+    // 当逻辑段采用 MapType::Framed 方式映射到物理内存的时候，
+    // data_frames 是一个保存了该逻辑段内的每个虚拟页面 
+    // 和它被映射到的物理页帧 FrameTracker 的一个键值对容器 BTreeMap 中，
+    // 这些物理页帧被用来存放实际内存数据而不是作为多级页表中的中间节点
     data_frames: BTreeMap<VirtPageNum, FrameTracker>,
+    // MapType 描述该逻辑段内的所有虚拟页面映射到物理页帧的同一种方式
     map_type: MapType,
+    // 控制该逻辑段的访问方式，它是页表项标志位 PTEFlags 的一个子集，仅保留 U/R/W/X 四个标志位
     map_perm: MapPermission,
 }
 
@@ -405,7 +477,9 @@ impl MapArea {
 #[derive(Copy, Clone, PartialEq, Debug)]
 /// map type for memory set: identical or framed
 pub enum MapType {
+    /// Identical mapping, i.e. phy_addr == virt_addr
     Identical,
+    /// 对于每个虚拟页面都需要映射到一个新分配的物理页帧
     Framed,
 }
 
