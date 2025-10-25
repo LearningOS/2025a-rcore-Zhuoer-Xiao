@@ -75,31 +75,39 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 
     // ---- access current PCB exclusively
     let mut inner = task.inner_exclusive_access();
-    if !inner
-        .children
-        .iter()
-        .any(|p| pid == -1 || pid as usize == p.getpid())
-    {
-        return -1;
-        // ---- release current PCB
-    }
-    let pair = inner.children.iter().enumerate().find(|(_, p)| {
-        // ++++ temporarily access child PCB exclusively
-        p.inner_exclusive_access().is_zombie() && (pid == -1 || pid as usize == p.getpid())
-        // ++++ release child PCB
-    });
-    if let Some((idx, _)) = pair {
-        let child = inner.children.remove(idx);
-        // confirm that child will be deallocated after being removed from children list
-        assert_eq!(Arc::strong_count(&child), 1);
-        let found_pid = child.getpid();
-        // ++++ temporarily access child PCB exclusively
-        let exit_code = child.inner_exclusive_access().exit_code;
-        // ++++ release child PCB
-        *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
-        found_pid as isize
-    } else {
-        -2
+    
+    loop {
+        // Check if there's any child process matching the given pid
+        if !inner
+            .children
+            .iter()
+            .any(|p| pid == -1 || pid as usize == p.getpid())
+        {
+            return -1;
+            // ---- release current PCB
+        }
+        
+        let pair = inner.children.iter().enumerate().find(|(_, p)| {
+            // ++++ temporarily access child PCB exclusively
+            p.inner_exclusive_access().is_zombie() && (pid == -1 || pid as usize == p.getpid())
+            // ++++ release child PCB
+        });
+        if let Some((idx, _)) = pair {
+            let child = inner.children.remove(idx);
+            // confirm that child will be deallocated after being removed from children list
+            assert_eq!(Arc::strong_count(&child), 1);
+            let found_pid = child.getpid();
+            // ++++ temporarily access child PCB exclusively
+            let exit_code = child.inner_exclusive_access().exit_code;
+            // ++++ release child PCB
+            *translated_refmut(inner.memory_set.token(), exit_code_ptr) = exit_code;
+            return found_pid as isize;
+        } else {
+            // If no zombie child found, we need to yield and check again
+            drop(inner); // Release the lock before yielding
+            suspend_current_and_run_next();
+            inner = task.inner_exclusive_access(); // Reacquire the lock
+        }
     }
     // ---- release current PCB automatically
 }
@@ -238,6 +246,15 @@ pub fn sys_spawn(path: *const u8) -> isize {
     if let Some(data) = get_app_data_by_name(path_str.as_str()) {
         let new_task = Arc::new(crate::task::TaskControlBlock::new(&data));
         let new_pid = new_task.pid.0;
+        
+        // 设置父子进程关系
+        let current_task = current_task().unwrap();
+        let mut parent_inner = current_task.inner_exclusive_access();
+        let mut new_task_inner = new_task.inner_exclusive_access();
+        new_task_inner.parent = Some(Arc::downgrade(&current_task));
+        drop(new_task_inner);
+        parent_inner.children.push(new_task.clone());
+        drop(parent_inner);
         
         // 添加新任务到调度器
         add_task(new_task);
