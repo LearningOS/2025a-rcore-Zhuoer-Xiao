@@ -4,7 +4,12 @@ use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPag
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
-
+// 仅当 V(Valid) 位为 1 时，页表项才是合法的；
+// R/W/X 分别控制索引到这个页表项的对应虚拟页面是否允许读/写/取指；
+// U 控制索引到这个页表项的对应虚拟页面是否在 CPU 处于 U 特权级的情况下是否被允许访问；
+// G 我们不理会；
+// A(Accessed) 记录自从页表项上的这一位被清零之后，页表项的对应虚拟页面是否被访问过；
+// D(Dirty) 则记录自从页表项上的这一位被清零之后，页表项的对应虚拟页表是否被修改过。
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
@@ -37,6 +42,7 @@ pub struct PageTableEntry {
 
 impl PageTableEntry {
     /// Create a new page table entry
+    /// 根据物理页号和页表项标志位创建一个页表项
     pub fn new(ppn: PhysPageNum, flags: PTEFlags) -> Self {
         PageTableEntry {
             bits: ppn.0 << 10 | flags.bits as usize,
@@ -70,15 +76,33 @@ impl PageTableEntry {
     pub fn executable(&self) -> bool {
         (self.flags() & PTEFlags::X) != PTEFlags::empty()
     }
+    /// 用户态可访问
+    pub fn user_accessible(&self)->bool{
+        (self.flags() & PTEFlags::U) != PTEFlags::empty()
+    }
 }
 
 /// page table structure
+/// SV39 多级页表是以节点为单位进行管理的。
+/// 每个节点恰好存储在一个物理页帧中，它的位置可以用一个物理页号来表示。
+
+/// 每个应用的地址空间都对应一个不同的多级页表，
+/// 这也就意味这不同页表的起始地址（即页表根节点的地址）是不一样的。 
+/// 因此 PageTable 要保存它根节点的物理页号 root_ppn 作为页表唯一的区分标志。
+/// 此外， 向量 frames 以 FrameTracker 的形式保存了页表所有的节点（包括根节点）
+/// 所在的物理页帧。这与物理页帧管理模块 的测试程序是一个思路，即将这些 FrameTracker 
+/// 的生命周期进一步绑定到 PageTable 下面。当 PageTable 生命周期结束后，
+/// 向量 frames 里面的那些 FrameTracker 也会被回收，
+/// 也就意味着存放多级页表节点的那些物理页帧 被回收了。
 pub struct PageTable {
     root_ppn: PhysPageNum,
     frames: Vec<FrameTracker>,
 }
 
 /// Assume that it won't oom when creating/mapping.
+/// 当我们通过 new 方法新建一个 PageTable 的时候，
+/// 它只需有一个根节点。为此我们需要分配一个物理页帧 FrameTracker 
+/// 并挂在向量 frames 下，然后更新根节点的物理页号 root_ppn 。
 impl PageTable {
     /// Create a new page table
     pub fn new() -> Self {
@@ -89,28 +113,38 @@ impl PageTable {
         }
     }
     /// Temporarily used to get arguments from user space.
+    /// 从SATP（Supervisor Address Translation and Protection）寄存器的值创建一个 PageTable 实例。在RISC-V架构中，SATP寄存器用于控制地址转换，其格式如下：
+    // 高4位：模式位（MODE），用于指定地址转换模式
+    // 低44位：页表根节点的物理页号（PPN）
     pub fn from_token(satp: usize) -> Self {
         Self {
+            // 提取SATP寄存器中的PPN（物理页号）部分
             root_ppn: PhysPageNum::from(satp & ((1usize << 44) - 1)),
             frames: Vec::new(),
         }
     }
     /// Find PageTableEntry by VirtPageNum, create a frame for a 4KB page table if not exist
+    /// 在多级页表找到一个虚拟页号对应的页表项的可变引用方便后续的读写。
+    /// 如果在 遍历的过程中发现有节点尚未创建则会新建一个节点
     fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
         let idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
         let mut result: Option<&mut PageTableEntry> = None;
         for (i, idx) in idxs.iter().enumerate() {
             let pte = &mut ppn.get_pte_array()[*idx];
+            // 如果是第三级（叶子级）页表（i==2），将当前页表项设为结果并跳出循环
             if i == 2 {
                 result = Some(pte);
                 break;
             }
+            // 如果当前页表项无效，分配一个新的物理页帧
             if !pte.is_valid() {
                 let frame = frame_alloc().unwrap();
                 *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
+                // 将新页表项的物理页帧加入页表的帧追踪器向量中
                 self.frames.push(frame);
             }
+            // 更新 ppn 为当前页表项指向的物理页号，用于下一级查找
             ppn = pte.ppn();
         }
         result
@@ -134,6 +168,9 @@ impl PageTable {
         result
     }
     /// set the map between virtual page number and physical page number
+    /// 多级页表并不是被创建出来之后就不再变化的，
+    /// 为了 MMU 能够通过地址转换正确找到应用地址空间中的数据实际被内核放在内存中位置，
+    /// 操作系统需要动态维护一个虚拟页号到页表项的映射，支持插入/删除键值对
     #[allow(unused)]
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
         let pte = self.find_pte_create(vpn).unwrap();
@@ -148,6 +185,7 @@ impl PageTable {
         *pte = PageTableEntry::empty();
     }
     /// get the page table entry from the virtual page number
+    /// 如果能够找到页表项，那么它会将页表项拷贝一份并返回
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.find_pte(vpn).map(|pte| *pte)
     }

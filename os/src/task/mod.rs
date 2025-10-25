@@ -46,6 +46,7 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+    
 }
 
 lazy_static! {
@@ -153,6 +154,34 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// 获取当前正在执行的任务内存集的可变引用，并执行闭包操作
+    pub fn current_momory_set(&self,f:impl FnOnce(&mut crate::mm::MemorySet)->isize)->isize{
+        let mut inner=self.inner.exclusive_access();
+        let cur=inner.current_task;
+        f(&mut inner.tasks[cur].memory_set)
+    }
+
+    /// 使用当前任务的页表转换虚拟页号
+    pub fn translate_vpn_to_pte(&self,vpn: crate::mm::VirtPageNum)->Option<crate::mm::PageTableEntry>{
+        let inner=self.inner.exclusive_access();
+        let cur=inner.current_task;
+        inner.tasks[cur].memory_set.translate(crate::mm::VirtPageNum(vpn.0))
+    }
+
+    /// 更新当前系统调用计数
+    pub fn update_syscall_count(&self,syscall_id:usize){
+        let mut inner=self.inner.exclusive_access();
+        let cur=inner.current_task;
+        inner.tasks[cur].syscall_count[syscall_id]+=1;
+    }
+
+    /// 获取当前系统调用计数
+    pub fn get_syscall_count(&self,syscall_id:usize)->usize{
+        let inner=self.inner.exclusive_access();
+        let cur=inner.current_task;
+        inner.tasks[cur].syscall_count[syscall_id]
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +230,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// 闭包访问当前任务的内存集
+pub fn current_momory_set(f: impl FnOnce(&mut crate::mm::MemorySet) -> isize) -> isize {
+    TASK_MANAGER.current_momory_set(f)
+}
+
+/// 当前任务的页表转换虚拟页号，得到页表项
+pub fn translate_vpn_to_pte(vpn: crate::mm::VirtPageNum) -> Option<crate::mm::PageTableEntry> {
+    TASK_MANAGER.translate_vpn_to_pte(vpn)
+}
+
+/// 更新当前系统调用计数
+pub fn update_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.update_syscall_count(syscall_id)
+}
+
+ /// 获取当前系统调用计数
+ pub fn get_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
 }
