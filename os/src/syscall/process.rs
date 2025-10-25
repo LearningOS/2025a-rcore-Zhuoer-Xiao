@@ -3,11 +3,13 @@ use alloc::sync::Arc;
 
 use crate::{
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str, VirtAddr, MapPermission},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        suspend_current_and_run_next, translate_vpn_to_pte, current_memory_set,
     },
+    timer::get_time_us,
+    config::PAGE_SIZE,
 };
 
 #[repr(C)]
@@ -132,7 +134,8 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
         let offset=va.page_offset();
 
         if let Some(pte)=translate_vpn_to_pte(vpn){
-            if !pte.is_valid(){
+            // 添加写权限检查
+            if !pte.is_valid() || !pte.user_accessible() || !pte.writable() {
                 return -1;
             }
             // 获取物理页号
@@ -146,71 +149,6 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     0
 }
 
-/// 跟踪系统调用
-/// 参数：
-/// trace_request: 操作类型
-/// 0 读取id地址的一个字节
-/// 1 写入data到id地址处
-/// 2 查询syscall为id的系统调用次数
-/// 返回值
-/// trace_request=0:成功返回读取的值，失败返回-1
-/// trace_request=1:成功返回0，失败返回-1
-/// trace_request=2:成功返回系统调用次数，失败返回-1
-/// 错误情况（trace_request=0/1）:
-/// id对应的地址不存在
-/// 地址用户不可见（U）
-/// 页面不可读（R）、写（W）
-pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
-    trace!("kernel: sys_trace");
-    if trace_request == 0 { 
-        let va=VirtAddr::from(id);
-        let vpn=va.floor();
-        let offset=va.page_offset();
-
-        let pte=match translate_vpn_to_pte(vpn){
-            Some(pte)=>pte,
-            None=>return -1
-        };
-        
-        // 检查页面是否可访问
-        if !pte.is_valid()|| !pte.user_accessible(){
-            return -1;
-        }
-
-        // 检查是否可读
-        if !pte.readable(){
-            return -1;
-        }
-        // 开始读取
-        let ppn=pte.ppn();
-        let src=ppn.get_bytes_array();
-        src[offset] as isize
-    }else if trace_request==1{
-        let va=VirtAddr::from(id);
-        let vpn=va.floor();
-        let offset=va.page_offset();
-
-        // 获取当前页表项
-        let pte=match translate_vpn_to_pte(vpn){
-            Some(pte)=>pte,
-            None=>return -1
-        };
-        if !pte.is_valid()|| !pte.user_accessible(){
-            return -1;
-        }
-        if !pte.writable(){
-            return -1;
-        }
-        let ppn=pte.ppn();
-        let dst=ppn.get_bytes_array();
-        dst[offset]=data as u8;
-        0
-    }else if trace_request==2{
-        get_syscall_count(id) as isize
-    }else{
-        return -1;
-    }
-}
 
 /// 内存映射系统调用
 /// 申请长度为len的物理内存，映射到start开始的虚拟地址处
@@ -251,7 +189,7 @@ pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
         map_perm |= MapPermission::X;
     }    
     
-    current_momory_set(|memory_set|{
+    current_memory_set(|memory_set|{
         if memory_set.mmap(VirtAddr::from(start),len,map_perm){
             0
         }else{
@@ -266,7 +204,7 @@ pub fn sys_munmap(start: usize, len: usize) -> isize {
     if start % PAGE_SIZE != 0 {
         return -1;
     }
-    current_momory_set(|memory_set|{
+    current_memory_set(|memory_set|{
         if memory_set.munmap(VirtAddr::from(start),len){
             0
         }else{
@@ -287,19 +225,43 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+pub fn sys_spawn(path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+        "kernel:pid[{}] sys_spawn path={:?}",
+        current_task().unwrap().pid.0,
+        path
     );
-    -1
+    
+    let token = current_user_token();
+    let path_str = translated_str(token, path);
+    
+    if let Some(data) = get_app_data_by_name(path_str.as_str()) {
+        let new_task = Arc::new(crate::task::TaskControlBlock::new(&data));
+        let new_pid = new_task.pid.0;
+        
+        // 添加新任务到调度器
+        add_task(new_task);
+        new_pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
+        "kernel:pid[{}] sys_set_priority prio={}",
+        current_task().unwrap().pid.0,
+        prio
     );
-    -1
+    
+    // 检查优先级是否合法 (>= 2)
+    if prio < 2 {
+        return -1;
+    }
+    
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.priority = prio as usize;
+    prio
 }

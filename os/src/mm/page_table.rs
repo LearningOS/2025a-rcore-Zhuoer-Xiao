@@ -86,6 +86,7 @@ impl PageTableEntry {
 /// 的生命周期进一步绑定到 PageTable 下面。当 PageTable 生命周期结束后，
 /// 向量 frames 里面的那些 FrameTracker 也会被回收，
 /// 也就意味着存放多级页表节点的那些物理页帧 被回收了。
+#[derive(Debug)]
 pub struct PageTable {
     root_ppn: PhysPageNum,
     frames: Vec<FrameTracker>,

@@ -24,17 +24,30 @@ mod task;
 use crate::loader::get_app_data_by_name;
 use alloc::sync::Arc;
 use lazy_static::*;
-pub use manager::{fetch_task, TaskManager};
+pub use manager::{fetch_task, TaskManager, add_task};
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-pub use manager::add_task;
+pub use manager::TASK_MANAGER;
 pub use processor::{
     current_task, current_trap_cx, current_user_token, run_tasks, schedule, take_current_task,
     Processor,
 };
+
+/// 闭包访问当前任务的内存集
+pub fn current_memory_set(f: impl FnOnce(&mut crate::mm::MemorySet) -> isize) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    f(&mut inner.memory_set)
+}
+
+/// 当前任务的页表转换虚拟页号，得到页表项
+pub fn translate_vpn_to_pte(vpn: crate::mm::VirtPageNum) -> Option<crate::mm::PageTableEntry> {
+    current_task().unwrap().inner_exclusive_access().memory_set.translate(vpn)
+}
+
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     // There must be an application running.
@@ -114,24 +127,4 @@ lazy_static! {
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
-}
-
-/// 闭包访问当前任务的内存集
-pub fn current_momory_set(f: impl FnOnce(&mut crate::mm::MemorySet) -> isize) -> isize {
-    TASK_MANAGER.current_momory_set(f)
-}
-
-/// 当前任务的页表转换虚拟页号，得到页表项
-pub fn translate_vpn_to_pte(vpn: crate::mm::VirtPageNum) -> Option<crate::mm::PageTableEntry> {
-    TASK_MANAGER.translate_vpn_to_pte(vpn)
-}
-
-/// 更新当前系统调用计数
-pub fn update_syscall_count(syscall_id: usize) {
-    TASK_MANAGER.update_syscall_count(syscall_id)
-}
-
- /// 获取当前系统调用计数
- pub fn get_syscall_count(syscall_id: usize) -> usize {
-    TASK_MANAGER.get_syscall_count(syscall_id)
 }

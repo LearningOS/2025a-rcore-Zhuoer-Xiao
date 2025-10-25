@@ -1,27 +1,68 @@
-//! Types related to task management & Functions for completely changing TCB
+//! Task management
+//! 
+//! Create and manage task, including task status, task switch, task context and task ID.
+//! Also implement the task scheduler based on stride scheduling algorithm.
+
+use alloc::{sync::{Arc, Weak}, vec::Vec};
+use core::fmt;
+
+/// Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
-use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
 use core::cell::RefMut;
+
+/// Inner structure of task control block
+#[derive(Debug)]
+pub struct TaskControlBlockInner {
+    pub trap_cx_ppn: PhysPageNum,
+    pub base_size: usize,
+    pub task_cx: TaskContext,
+    pub task_status: TaskStatus,
+    pub memory_set: MemorySet,
+    pub parent: Option<Weak<TaskControlBlock>>,
+    pub children: Vec<Arc<TaskControlBlock>>,
+    pub exit_code: i32,
+    // pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
+    pub time: usize,
+    pub stride: usize,
+    pub priority: usize,
+    pub heap_bottom: usize,
+    pub program_brk: usize,
+}
 
 /// Task control block structure
 ///
-/// Directly save the contents that will not change during running
+/// Directly access to this is not allowed, you should use methods like `inner_exclusive_access`
+/// to access it with exclusive access
 pub struct TaskControlBlock {
-    // Immutable
+    // immutable
     /// Process identifier
     pub pid: PidHandle,
-
-    /// Kernel stack corresponding to PID
+    /// Kernel stack of the process
     pub kernel_stack: KernelStack,
-
-    /// Mutable
+    // mutable
     inner: UPSafeCell<TaskControlBlockInner>,
+}
+
+// Manual implementation of Debug trait for TaskControlBlock to avoid issues with UPSafeCell
+// and provide more meaningful debug output.
+impl fmt::Debug for TaskControlBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let inner = self.inner.exclusive_access();
+        f.debug_struct("TaskControlBlock")
+            .field("pid", &self.pid)
+            .field("kernel_stack", &self.kernel_stack)
+            .field("task_status", &inner.task_status)
+            .field("memory_set", &"MemorySet { ... }") // Avoid potentially expensive or recursive formatting
+            .field("parent", &inner.parent.as_ref().map(|p| p.upgrade().map(|arc| arc.pid.clone())))
+            .field("children", &inner.children.iter().map(|c| c.pid.clone()).collect::<Vec<_>>())
+            .field("priority", &inner.priority)
+            .finish()
+    }
 }
 
 impl TaskControlBlock {
@@ -36,42 +77,6 @@ impl TaskControlBlock {
     }
 }
 
-pub struct TaskControlBlockInner {
-    /// The physical page number of the frame where the trap context is placed
-    pub trap_cx_ppn: PhysPageNum,
-
-    /// Application data can only appear in areas
-    /// where the application address space is lower than base_size
-    pub base_size: usize,
-
-    /// Save task context
-    pub task_cx: TaskContext,
-
-    /// Maintain the execution status of the current process
-    pub task_status: TaskStatus,
-
-    /// Application address space
-    pub memory_set: MemorySet,
-
-    /// Parent process of the current process.
-    /// Weak will not affect the reference count of the parent
-    pub parent: Option<Weak<TaskControlBlock>>,
-
-    /// A vector containing TCBs of all child processes of the current process
-    pub children: Vec<Arc<TaskControlBlock>>,
-
-    /// It is set when active exit or execution error occurs
-    pub exit_code: i32,
-
-    /// Heap bottom
-    pub heap_bottom: usize,
-
-    /// Program break
-    pub program_brk: usize,
-
-    /// syscall count
-    pub syscall_count: [usize; MAX_SYSCALL_NUM],
-}
 
 impl TaskControlBlockInner {
     /// get the trap context
@@ -88,12 +93,19 @@ impl TaskControlBlockInner {
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
     }
+    /*
+    pub fn alloc_tid(&self) {
+        unsafe {
+            TID = self.pid.0 as usize;
+        }
+    }
+    */
 }
 
 impl TaskControlBlock {
-    /// Create a new process
+    /// new
     ///
-    /// At present, it is only used for the creation of initproc
+    /// Create a new task with empty memory set and zero task status
     pub fn new(elf_data: &[u8]) -> Self {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
@@ -106,7 +118,7 @@ impl TaskControlBlock {
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
         // push a task context which goes to trap_return to the top of kernel stack
-        let task_control_block = Self {
+        let task_control_block = Arc::new(TaskControlBlock {
             pid: pid_handle,
             kernel_stack,
             inner: unsafe {
@@ -119,11 +131,15 @@ impl TaskControlBlock {
                     parent: None,
                     children: Vec::new(),
                     exit_code: 0,
-                    heap_bottom: user_sp,
-                    program_brk: user_sp,
+                    // fd_table: Vec::new(),
+                    time: 0,
+                    stride: 0,
+                    priority: 16,
+                    heap_bottom: 0,
+                    program_brk: 0,
                 })
             },
-        };
+        });
         // prepare TrapContext in user space
         let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
@@ -133,7 +149,7 @@ impl TaskControlBlock {
             kernel_stack_top,
             trap_handler as usize,
         );
-        task_control_block
+        Arc::try_unwrap(task_control_block).unwrap()
     }
 
     /// Load a new elf to replace the original application address space and start execution
@@ -192,8 +208,12 @@ impl TaskControlBlock {
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
                     exit_code: 0,
-                    heap_bottom: parent_inner.heap_bottom,
-                    program_brk: parent_inner.program_brk,
+                    // fd_table: Vec::new(),
+                    time: 0,
+                    stride: 0,
+                    priority: 16,
+                    heap_bottom: 0,
+                    program_brk: 0,
                 })
             },
         });
@@ -241,7 +261,7 @@ impl TaskControlBlock {
     }
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 /// task status: UnInit, Ready, Running, Exited
 pub enum TaskStatus {
     /// uninitialized

@@ -2,8 +2,9 @@
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
-use super::{StepByOne, VPNRange};
 use crate::config::{MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE};
+use crate::mm::VPNRange;
+use crate::mm::StepByOne;
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -36,6 +37,7 @@ lazy_static! {
 /// 用来表明正在运行的应用所在执行环境中的可访问内存空间，
 /// 在这个内存空间中，包含了一系列的不一定连续的逻辑段。 
 /// 这样我们就有任务的地址空间、内核的地址空间等说法了
+#[derive(Debug)]
 pub struct MemorySet {
     // 包含了该地址空间的多级页表 page_table 和一个逻辑段 MapArea 的向量 areas 。
     // 注意 PageTable 下 挂着所有多级页表的节点所在的物理页帧，
@@ -367,6 +369,7 @@ impl MemorySet {
 }
 /// map area structure, controls a contiguous piece of virtual memory
 /// 逻辑段描述连续虚拟地址空间
+#[derive(Debug)]
 pub struct MapArea {
     // 描述一段虚拟页号的连续区间，表示该逻辑段在地址区间中的位置和长度
     vpn_range: VPNRange,
