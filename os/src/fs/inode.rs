@@ -53,9 +53,23 @@ impl OSInode {
         }
         v
     }
+    
+    /// Get the inner inode
+    pub fn inode(&self) -> Arc<Inode> {
+        self.inner.exclusive_access().inode.clone()
+    }
+    
+    /// Check if the inode is a directory
+    pub fn is_dir(&self) -> bool {
+        // 由于Inode没有公共的is_dir方法，我们暂时返回false
+        // 或者可以通过读取文件属性来判断
+        false
+    }
 }
 
 lazy_static! {
+
+    /// The root directory
     pub static ref ROOT_INODE: Arc<Inode> = {
         let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
         Arc::new(EasyFileSystem::root_inode(&efs))
@@ -155,5 +169,8 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
     }
 }
