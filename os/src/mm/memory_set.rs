@@ -304,7 +304,7 @@ impl MemorySet {
         let end = VirtAddr::from(start.0 + len);
         let start_vpn = start.floor();
         let end_vpn = end.ceil();
-        // 检查范围内是否有被映射的物理页帧
+        // 检查范围内是否有未被映射的物理页帧
         for vpn in VPNRange::new(start_vpn, end_vpn) {
             if let Some(pte) = self.page_table.translate(vpn) {
                 if !pte.is_valid() {
