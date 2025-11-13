@@ -6,8 +6,9 @@ use crate::trap::TrapContext;
 use crate::{mm::PhysPageNum, sync::UPSafeCell};
 use alloc::sync::{Arc, Weak};
 use core::cell::RefMut;
+use alloc::vec::Vec;
 
-/// Task control block structure
+/// 线程控制块
 pub struct TaskControlBlock {
     /// immutable
     pub process: Weak<ProcessControlBlock>,
@@ -41,6 +42,10 @@ pub struct TaskControlBlockInner {
     pub task_status: TaskStatus,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
+    /// 资源分配跟踪：已获取的互斥锁列表
+    pub held_mutexes: Vec<usize>,
+    /// 资源分配跟踪：已获取的信号量列表
+    pub held_semaphores: Vec<usize>,
 }
 
 impl TaskControlBlockInner {
@@ -75,6 +80,8 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    held_mutexes: Vec::new(),
+                    held_semaphores: Vec::new(),
                 })
             },
         }

@@ -4,7 +4,7 @@ use crate::{
     trap::{trap_handler, TrapContext},
 };
 use alloc::sync::Arc;
-/// thread create syscall
+/// 创建线程
 pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     trace!(
         "kernel:pid[{}] tid[{}] sys_thread_create",
@@ -74,7 +74,7 @@ pub fn sys_gettid() -> isize {
         .tid as isize
 }
 
-/// wait for a thread to exit syscall
+/// 进程/主线程调用 waittid 来回收线程资源
 ///
 /// thread does not exist, return -1
 /// thread has not exited yet, return -2
